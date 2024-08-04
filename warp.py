@@ -6,6 +6,7 @@ import time
 import textwrap
 import tempfile
 import logging
+import pyperclip
 
 # Configuración básica de logging para guardar en un archivo
 logging.basicConfig(
@@ -354,6 +355,38 @@ class LightningCLIUI:
             logging.error(f"Error: {str(e)}")
             self.result_output = f"Error: {str(e)}"
 
+    def show_bolt11_popup(self, bolt11):
+        """Display a popup window with the bolt11 invoice code for easy copying."""
+        # Calculate the size of the window
+        popup_width = min(self.max_x - 4, 80)  # Max width of 80 or screen width minus 4
+        popup_height = 10  # Adjust height to accommodate wrapped lines
+        start_x = (self.max_x - popup_width) // 2
+        start_y = (self.max_y - popup_height) // 2
+
+        # Create the new window
+        popup_win = curses.newwin(popup_height, popup_width, start_y, start_x)
+        popup_win.border()
+
+        # Add a title
+        title = "Invoice Code"
+        popup_win.addstr(0, (popup_width - len(title)) // 2, title, curses.A_BOLD)
+
+        # Add the bolt11 text with proper wrapping
+        wrapped_bolt11 = textwrap.wrap(bolt11, width=popup_width - 4)
+        for idx, line in enumerate(wrapped_bolt11):
+            if idx + 2 < popup_height - 1:  # Ensure we don't write beyond the window height
+                popup_win.addstr(idx + 2, 2, line)
+
+        # Refresh the popup to display it
+        popup_win.refresh()
+
+        # Wait for user input to close the popup
+        popup_win.getch()
+        popup_win.clear()
+        self.stdscr.touchwin()
+        self.stdscr.refresh()
+
+
     def execute_command(self, command):
         """Execute the entered command and store the result."""
         if not command.strip():
@@ -388,17 +421,21 @@ class LightningCLIUI:
             if len(params) < 3:
                 self.result_output = "Error: Usage: invoice <amt> <label> <desc>"
             else:
-                amt = params[0]
+                # Convert amount to millisatoshis by multiplying by 1000
+                amt = str(int(params[0]) * 1000)
                 label = params[1]
                 desc = " ".join(params[2:])
 
-                # Use a temporary file for long invoices
-                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                    temp_file.write(desc.encode())
-                    temp_file.flush()
-
-                    # Command to create invoice
-                    self.result_output = json.dumps(self.node.run_command("invoice", [amt, label, f"@{temp_file.name}"]), indent=4)
+                # Command to create invoice
+                response = self.node.run_command("invoice", [amt, label, desc])
+                if isinstance(response, dict) and "bolt11" in response:
+                    bolt11 = response["bolt11"]
+                    # Muestra el popup
+                    self.show_bolt11_popup(bolt11)
+                    # Copia al portapapeles
+                    pyperclip.copy(bolt11)
+                    logging.debug(f"bolt11 copied to clipboard: {bolt11}")
+                self.result_output = self.format_json(response)
         else:
             # Run the command and update the result output
             response = self.node.run_command(command_name, params)
