@@ -3,6 +3,16 @@ import subprocess
 import json
 import threading
 import time
+import textwrap
+import tempfile
+import logging
+
+# Configuración básica de logging para guardar en un archivo
+logging.basicConfig(
+    filename='debug.log',  # Nombre del archivo de log
+    level=logging.DEBUG,  # Nivel de logging
+    format='%(asctime)s - %(levelname)s - %(message)s'  # Formato del mensaje
+)
 
 class LightningNode:
     def __init__(self, lightning_dir="~/.lightning", network="bitcoin"):
@@ -19,15 +29,26 @@ class LightningNode:
         try:
             # Construct the command
             cmd = ["lightning-cli", f"--network={self.network}", command] + params
+            logging.debug(f"Running command: {' '.join(cmd)}")  # Log the command execution
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            # Check for empty response
+            if not result.stdout.strip():
+                logging.error("Error: Empty response from command.")
+                return "Error: Empty response from command."
+
             return json.loads(result.stdout)  # Parse JSON output
         except subprocess.CalledProcessError as e:
+            logging.error(f"Error executing {command}: {e.stderr.strip()}")
             return f"Error executing {command}: {e.stderr.strip()}"
         except json.JSONDecodeError:
-            return result.stdout.strip() or "Error: Empty response from command."
+            logging.error("Error: Unable to parse JSON response.")
+            return "Error: Unable to parse JSON response."
         except FileNotFoundError:
+            logging.error("Error: lightning-cli not found. Is the Lightning node running?")
             return "Error: lightning-cli not found. Is the Lightning node running?"
         except Exception as e:
+            logging.error(f"Unexpected error: {str(e)}")
             return f"Unexpected error: {str(e)}"
 
     def get_balances(self):
@@ -48,6 +69,7 @@ class LightningNode:
 
             return onchain_balance, lightning_balance
         except Exception as e:
+            logging.error(f"Error fetching balances: {str(e)}")
             return "Error fetching balances", str(e)
 
     def open_channel(self, peer_id, amount, feerate=None):
@@ -73,7 +95,8 @@ class LightningNode:
                 # Update block height and peers if node is active
                 self.current_block_height = result.get("blockheight", "Unknown")
                 self.num_peers = result.get("num_peers", 0)
-        except Exception:
+        except Exception as e:
+            logging.error(f"Error checking node status: {str(e)}")
             self.node_active = False
             self.current_block_height = "Error"
 
@@ -84,7 +107,8 @@ class LightningNode:
             self.wallet_active = isinstance(result, dict) and "outputs" in result
             if self.wallet_active:
                 self.channels = result.get("channels", [])
-        except Exception:
+        except Exception as e:
+            logging.error(f"Error checking wallet status: {str(e)}")
             self.wallet_active = False
             self.channels = []
 
@@ -160,6 +184,7 @@ class LightningCLIUI:
                 self.result_output = ''
 
         except curses.error:
+            logging.error("Error: Screen drawing failed, check terminal size.")
             self.result_output = "Error: Screen drawing failed, check terminal size."
 
     def draw_result_output(self):
@@ -171,6 +196,7 @@ class LightningCLIUI:
                 if i + 2 < self.max_y - 2:  # Prevents writing beyond the screen
                     self.stdscr.addstr(2 + i, 0, line[:self.max_x - 1])
         except curses.error:
+            logging.error("Error: Unable to display result output.")
             self.result_output = "Error: Unable to display result output."
 
     def draw_menu(self):
@@ -232,6 +258,7 @@ class LightningCLIUI:
                 if 2 + i < self.max_y - 2:  # Prevent writing beyond screen
                     self.stdscr.addstr(2 + i, 0, line[:self.max_x - 1])
         except curses.error:
+            logging.error("Error: Unable to display help menu.")
             self.result_output = "Error: Unable to display help menu."
 
     def draw_balance_panel(self):
@@ -241,6 +268,7 @@ class LightningCLIUI:
 
             if isinstance(onchain_balance, str) or isinstance(lightning_balance, str):
                 # If there's an error message, display it
+                logging.error(f"Error fetching balances: {onchain_balance} {lightning_balance}")
                 self.result_output = f"Error: {onchain_balance} {lightning_balance}"
                 return
 
@@ -268,6 +296,7 @@ class LightningCLIUI:
                 self.stdscr.addstr(11 + i, panel_start, f"- {channel_id}")
 
         except curses.error:
+            logging.error("Error: Unable to display balances.")
             self.result_output = "Error: Unable to display balances."
 
     def draw_block_height(self):
@@ -277,6 +306,7 @@ class LightningCLIUI:
             label = f"Cypherpunk Warp Height: {block_height}"
             self.stdscr.addstr(self.max_y - 3, self.max_x - len(label) - 1, label)
         except curses.error:
+            logging.error("Error: Unable to display block height.")
             self.result_output = "Error: Unable to display block height."
 
     def run(self):
@@ -299,6 +329,9 @@ class LightningCLIUI:
                         if not self.show_menu:
                             self.show_menu = True
                             self.balances_changed = True
+                    elif self.current_command.strip() == "pay":
+                        self.pay_invoice_popup()
+                        self.balances_changed = True  # Mark change for redraw
                     else:
                         self.show_menu = False
                         self.execute_command(self.current_command)
@@ -318,6 +351,7 @@ class LightningCLIUI:
                 self.stdscr.refresh()
 
         except Exception as e:
+            logging.error(f"Error: {str(e)}")
             self.result_output = f"Error: {str(e)}"
 
     def execute_command(self, command):
@@ -350,14 +384,88 @@ class LightningCLIUI:
                 channel_id = params[0]
                 force = len(params) > 1 and params[1].lower() == "force"
                 self.result_output = json.dumps(self.node.close_channel(channel_id, force), indent=4)
+        elif command_name == "invoice":
+            if len(params) < 3:
+                self.result_output = "Error: Usage: invoice <amt> <label> <desc>"
+            else:
+                amt = params[0]
+                label = params[1]
+                desc = " ".join(params[2:])
+
+                # Use a temporary file for long invoices
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    temp_file.write(desc.encode())
+                    temp_file.flush()
+
+                    # Command to create invoice
+                    self.result_output = json.dumps(self.node.run_command("invoice", [amt, label, f"@{temp_file.name}"]), indent=4)
         else:
             # Run the command and update the result output
             response = self.node.run_command(command_name, params)
 
-            if isinstance(response, str):
-                self.result_output = response
+            # Format JSON output with text wrapping
+            if isinstance(response, dict):
+                formatted_output = self.format_json(response)
+                self.result_output = formatted_output
             else:
-                self.result_output = json.dumps(response, indent=4)
+                self.result_output = response
+
+    def pay_invoice_popup(self):
+        """Display a popup window for entering and paying an invoice."""
+        popup_height, popup_width = 10, 80
+        popup_y, popup_x = (self.max_y - popup_height) // 2, (self.max_x - popup_width) // 2
+
+        popup = curses.newwin(popup_height, popup_width, popup_y, popup_x)
+        popup.border()
+        popup.addstr(1, 2, "Enter Invoice", curses.A_BOLD)
+        popup.addstr(2, 2, "Paste your Lightning invoice here:")
+        popup.refresh()
+
+        # Create a subwindow for input
+        input_window = curses.newwin(popup_height - 4, popup_width - 4, popup_y + 4, popup_x + 2)
+        input_window.clear()
+        curses.echo()  # Enable echoing of input
+
+        # Capture multiline input
+        invoice_lines = []
+        while True:
+            line = input_window.getstr().decode('utf-8').strip()
+            if not line:
+                break
+            invoice_lines.append(line)
+
+        # Combine all lines into a single invoice string
+        invoice = ''.join(invoice_lines)
+        curses.noecho()  # Disable echoing
+
+        # Clear the popup
+        popup.clear()
+        popup.refresh()
+
+        if invoice:
+            response = self.node.run_command("pay", [invoice])
+
+            if isinstance(response, dict):
+                formatted_output = self.format_json(response)
+                self.result_output = formatted_output
+            else:
+                self.result_output = response
+
+
+    def format_json(self, json_data):
+        """Format JSON data with proper indentation and text wrapping."""
+        try:
+            formatted_lines = json.dumps(json_data, indent=4).splitlines()
+            wrapped_lines = []
+            for line in formatted_lines:
+                if len(line) > self.max_x - 1:
+                    wrapped_lines.extend(textwrap.wrap(line, width=self.max_x - 1))
+                else:
+                    wrapped_lines.append(line)
+            return "\n".join(wrapped_lines)
+        except Exception as e:
+            logging.error(f"Error formatting JSON: {str(e)}")
+            return f"Error formatting JSON: {str(e)}"
 
     def monitor_node_status(self):
         """Background thread to check the node status."""
@@ -399,4 +507,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nExiting the program.")
     except Exception as e:
+        logging.error(f"An unexpected error occurred: {str(e)}")
         print(f"An unexpected error occurred: {str(e)}")
