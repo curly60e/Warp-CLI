@@ -52,6 +52,7 @@ class LightningNode:
             logging.error(f"Unexpected error: {str(e)}")
             return f"Unexpected error: {str(e)}"
 
+
     def get_balances(self):
         """Fetch on-chain and lightning wallet balances."""
         try:
@@ -145,6 +146,14 @@ class LightningCLIUI:
         self.stdscr.timeout(100)  # Set input timeout for getch
         self.stdscr.clear()
         self.stdscr.refresh()
+
+    def copy_to_clipboard(self, text):  # Added self as the first parameter
+        """Copy the given text to the clipboard."""
+        try:
+            pyperclip.copy(text)
+            logging.info(f"Copied to clipboard: {text[:30]}...")  # Log a snippet of the copied text
+        except Exception as e:
+            logging.error(f"Error copying to clipboard: {str(e)}")
 
     def draw_interface(self):
         """Draw the terminal interface."""
@@ -333,6 +342,9 @@ class LightningCLIUI:
                     elif self.current_command.strip() == "pay":
                         self.pay_invoice_popup()
                         self.balances_changed = True  # Mark change for redraw
+                    elif self.current_command.strip() == "fetchinvoice":
+                        self.fetch_invoice_popup()  # Add fetch_invoice_popup for fetching invoices
+                        self.balances_changed = True  # Mark change for redraw
                     else:
                         self.show_menu = False
                         self.execute_command(self.current_command)
@@ -355,37 +367,102 @@ class LightningCLIUI:
             logging.error(f"Error: {str(e)}")
             self.result_output = f"Error: {str(e)}"
 
-    def show_bolt11_popup(self, bolt11):
-        """Display a popup window with the bolt11 invoice code for easy copying."""
-        # Calculate the size of the window
-        popup_width = min(self.max_x - 4, 80)  # Max width of 80 or screen width minus 4
-        popup_height = 10  # Adjust height to accommodate wrapped lines
-        start_x = (self.max_x - popup_width) // 2
-        start_y = (self.max_y - popup_height) // 2
+    def show_bolt11_popup(self, bolt11_code):  # Fix: This was outside the class
+        """Display a popup to show and copy the bolt11 code for invoices."""
+        # Copy to clipboard
+        self.copy_to_clipboard(bolt11_code)  # Use self.copy_to_clipboard instead of copy_to_clipboard
 
-        # Create the new window
+        # Create a new window
+        popup_width = min(self.max_x - 4, 150)
+        popup_height = 10
+        start_y, start_x = (self.max_y - popup_height) // 2, (self.max_x - popup_width) // 2
+
         popup_win = curses.newwin(popup_height, popup_width, start_y, start_x)
-        popup_win.border()
+        popup_win.box()
+        popup_win.addstr(1, 2, "Invoice Code (Bolt11)", curses.A_BOLD)
 
-        # Add a title
-        title = "Invoice Code"
-        popup_win.addstr(0, (popup_width - len(title)) // 2, title, curses.A_BOLD)
+        # Display the bolt11 code
+        if len(bolt11_code) <= popup_width - 4:
+            popup_win.addstr(3, 2, bolt11_code)  # Display as much as fits
+        else:
+            wrapped_lines = textwrap.wrap(bolt11_code, popup_width - 4)
+            for i, line in enumerate(wrapped_lines):
+                if 3 + i < popup_height - 2:  # Ensure not to overflow window
+                    popup_win.addstr(3 + i, 2, line)
 
-        # Add the bolt11 text with proper wrapping
-        wrapped_bolt11 = textwrap.wrap(bolt11, width=popup_width - 4)
-        for idx, line in enumerate(wrapped_bolt11):
-            if idx + 2 < popup_height - 1:  # Ensure we don't write beyond the window height
-                popup_win.addstr(idx + 2, 2, line)
-
-        # Refresh the popup to display it
-        popup_win.refresh()
-
-        # Wait for user input to close the popup
+        # Inform the user that it was copied
+        popup_win.addstr(popup_height - 2, 2, "Copied to clipboard! Press any key to close...")
         popup_win.getch()
-        popup_win.clear()
-        self.stdscr.touchwin()
-        self.stdscr.refresh()
+        del popup_win
 
+    def show_bolt12_popup(self, bolt12_code):
+        """Display a popup to show and copy the bolt12 code for offers."""
+        # Copy to clipboard
+        self.copy_to_clipboard(bolt12_code)  # Use self.copy_to_clipboard instead of copy_to_clipboard
+
+        # Create a new window
+        popup_width = min(self.max_x - 4, 150)
+        popup_height = 10
+        start_y, start_x = (self.max_y - popup_height) // 2, (self.max_x - popup_width) // 2
+
+        popup_win = curses.newwin(popup_height, popup_width, start_y, start_x)
+        popup_win.box()
+        popup_win.addstr(1, 2, "Offer Code (Bolt12)", curses.A_BOLD)
+
+        # Display the bolt12 code
+        if len(bolt12_code) <= popup_width - 4:
+            popup_win.addstr(3, 2, bolt12_code)  # Display as much as fits
+        else:
+            wrapped_lines = textwrap.wrap(bolt12_code, popup_width - 4)
+            for i, line in enumerate(wrapped_lines):
+                if 3 + i < popup_height - 2:  # Ensure not to overflow window
+                    popup_win.addstr(3 + i, 2, line)
+
+        # Inform the user that it was copied
+        popup_win.addstr(popup_height - 2, 2, "Copied to clipboard! Press any key to close...")
+        popup_win.getch()
+        del popup_win
+
+    def fetch_invoice_popup(self):
+        """Display a popup window for entering and fetching an offer code."""
+        popup_height, popup_width = 10, 80
+        popup_y, popup_x = (self.max_y - popup_height) // 2, (self.max_x - popup_width) // 2
+
+        popup = curses.newwin(popup_height, popup_width, popup_y, popup_x)
+        popup.border()
+        popup.addstr(1, 2, "Enter Offer (Bolt12)", curses.A_BOLD)
+        popup.addstr(2, 2, "Paste your offer code here:")
+        popup.refresh()
+
+        # Create a subwindow for input
+        input_window = curses.newwin(popup_height - 4, popup_width - 4, popup_y + 4, popup_x + 2)
+        input_window.clear()
+        curses.echo()  # Enable echoing of input
+
+        # Capture multiline input
+        offer_lines = []
+        while True:
+            line = input_window.getstr().decode('utf-8').strip()
+            if not line:
+                break
+            offer_lines.append(line)
+
+        # Combine all lines into a single offer code
+        offer_code = ''.join(offer_lines)
+        curses.noecho()  # Disable echoing
+
+        # Clear the popup
+        popup.clear()
+        popup.refresh()
+
+        if offer_code:
+            response = self.node.run_command("fetchinvoice", [offer_code])
+
+            if isinstance(response, dict):
+                formatted_output = self.format_json(response)
+                self.result_output = formatted_output
+            else:
+                self.result_output = response
 
     def execute_command(self, command):
         """Execute the entered command and store the result."""
@@ -421,21 +498,31 @@ class LightningCLIUI:
             if len(params) < 3:
                 self.result_output = "Error: Usage: invoice <amt> <label> <desc>"
             else:
-                # Convert amount to millisatoshis by multiplying by 1000
-                amt = str(int(params[0]) * 1000)
+                amt = str(int(params[0]) * 1000)  # Convert sats to millisats
                 label = params[1]
                 desc = " ".join(params[2:])
 
                 # Command to create invoice
                 response = self.node.run_command("invoice", [amt, label, desc])
                 if isinstance(response, dict) and "bolt11" in response:
-                    bolt11 = response["bolt11"]
-                    # Muestra el popup
-                    self.show_bolt11_popup(bolt11)
-                    # Copia al portapapeles
-                    pyperclip.copy(bolt11)
-                    logging.debug(f"bolt11 copied to clipboard: {bolt11}")
+                    self.show_bolt11_popup(response["bolt11"])
                 self.result_output = self.format_json(response)
+
+        elif command_name == "offer":
+            if len(params) < 2:
+                self.result_output = "Error: Usage: offer <amount> <description>"
+            else:
+                amount = params[0]
+                description = " ".join(params[1:])
+
+                # Run the offer command
+                response = self.node.run_command("offer", [amount, description])
+                if isinstance(response, dict):
+                    if "bolt12" in response:
+                        self.show_bolt12_popup(response["bolt12"])
+                    self.result_output = self.format_json(response)
+                else:
+                    self.result_output = response
         else:
             # Run the command and update the result output
             response = self.node.run_command(command_name, params)
