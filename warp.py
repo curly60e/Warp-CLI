@@ -386,80 +386,6 @@ class LightningCLIUI:
         self.stdscr.touchwin()
         self.stdscr.refresh()
 
-    def show_bolt12_popup(self):
-        """Display a popup window for entering and processing bolt12 codes."""
-        # Calculate appropriate dimensions for the popup window
-        popup_height = 10
-        popup_width = min(self.max_x - 4, 150)  # Increased max width to accommodate long inputs
-        start_y, start_x = (self.max_y - popup_height) // 2, (self.max_x - popup_width) // 2
-
-        # Create a new window for the popup
-        popup_win = curses.newwin(popup_height, popup_width, start_y, start_x)
-        popup_win.box()
-        popup_win.addstr(1, 2, "Enter Offer (Bolt12)", curses.A_BOLD)
-        popup_win.addstr(2, 2, "Paste your offer code here:")
-
-        # Initialize input field
-        curses.curs_set(1)  # Show cursor
-        input_buffer = ""
-        cursor_pos = 0  # To manage horizontal scrolling
-        scroll_offset = 0
-
-        while True:
-            popup_win.refresh()
-            key = popup_win.getch()
-
-            if key in (curses.KEY_ENTER, 10, 13):
-                # Run fetchinvoice with the entered bolt12 code
-                if input_buffer.strip():
-                    self.execute_fetchinvoice(input_buffer.strip())
-                    break
-            elif key in (curses.KEY_BACKSPACE, 127):
-                # Handle backspace
-                if cursor_pos > 0:
-                    input_buffer = input_buffer[:cursor_pos - 1] + input_buffer[cursor_pos:]
-                    cursor_pos -= 1
-                    if scroll_offset > 0:
-                        scroll_offset -= 1
-            elif key == curses.KEY_LEFT:
-                # Move cursor left
-                if cursor_pos > 0:
-                    cursor_pos -= 1
-                    if cursor_pos < scroll_offset:
-                        scroll_offset -= 1
-            elif key == curses.KEY_RIGHT:
-                # Move cursor right
-                if cursor_pos < len(input_buffer):
-                    cursor_pos += 1
-                    if cursor_pos >= scroll_offset + (popup_width - 4):
-                        scroll_offset += 1
-            elif key == 27:  # ESC key to exit
-                break
-            elif 32 <= key <= 126:  # Handle printable characters
-                input_buffer = input_buffer[:cursor_pos] + chr(key) + input_buffer[cursor_pos:]
-                cursor_pos += 1
-                if cursor_pos >= scroll_offset + (popup_width - 4):
-                    scroll_offset += 1
-
-            # Clear input line and re-draw it
-            popup_win.addstr(3, 2, " " * (popup_width - 4))
-            popup_win.addstr(3, 2, input_buffer[scroll_offset:scroll_offset + (popup_width - 4)])
-            popup_win.move(3, 2 + cursor_pos - scroll_offset)
-
-        curses.curs_set(0)  # Hide cursor
-        del popup_win  # Remove popup window after done
-
-
-    def execute_fetchinvoice(self, bolt12_code):
-        """Execute the fetchinvoice command with the provided bolt12 code."""
-        response = self.node.run_command("fetchinvoice", [bolt12_code])
-
-        # Check if the response is valid and display the result
-        if isinstance(response, dict):
-            self.result_output = self.format_json(response)
-        else:
-            self.result_output = response
-
 
     def execute_command(self, command):
         """Execute the entered command and store the result."""
@@ -495,17 +421,21 @@ class LightningCLIUI:
             if len(params) < 3:
                 self.result_output = "Error: Usage: invoice <amt> <label> <desc>"
             else:
-                amt = str(int(params[0]) * 1000)  # Convert sats to millisats
+                # Convert amount to millisatoshis by multiplying by 1000
+                amt = str(int(params[0]) * 1000)
                 label = params[1]
                 desc = " ".join(params[2:])
 
                 # Command to create invoice
                 response = self.node.run_command("invoice", [amt, label, desc])
                 if isinstance(response, dict) and "bolt11" in response:
-                    self.show_bolt11_popup(response["bolt11"])
+                    bolt11 = response["bolt11"]
+                    # Muestra el popup
+                    self.show_bolt11_popup(bolt11)
+                    # Copia al portapapeles
+                    pyperclip.copy(bolt11)
+                    logging.debug(f"bolt11 copied to clipboard: {bolt11}")
                 self.result_output = self.format_json(response)
-        elif command_name == "fetchinvoice":
-            self.show_bolt12_popup()
         else:
             # Run the command and update the result output
             response = self.node.run_command(command_name, params)
@@ -516,8 +446,6 @@ class LightningCLIUI:
                 self.result_output = formatted_output
             else:
                 self.result_output = response
-
-
 
     def pay_invoice_popup(self):
         """Display a popup window for entering and paying an invoice."""
