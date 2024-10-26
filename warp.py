@@ -7,6 +7,7 @@ import textwrap
 import tempfile
 import logging
 import pyperclip
+import argparse
 
 # Configuración básica de logging para guardar en un archivo
 logging.basicConfig(
@@ -29,7 +30,7 @@ class LightningNode:
         """Run a lightning-cli command with optional parameters."""
         try:
             # Construct the command
-            cmd = ["lightning-cli", f"--network={self.network}", command] + params
+            cmd = ["lightning-cli", f"--lightning-dir={self.lightning_dir}", f"--network={self.network}", command] + params
             logging.debug(f"Running command: {' '.join(cmd)}")  # Log the command execution
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
@@ -617,17 +618,21 @@ class LightningCLIUI:
             previous_channels = self.node.channels
             time.sleep(10)  # Check every 10 seconds
 
-def main(stdscr):
+def main(stdscr, args):
     # Initialize the LightningNode and the UI
-    node = LightningNode()
+    node = LightningNode(args.lightning_dir, args.network)
     ui = LightningCLIUI(stdscr, node)
 
     # Run the UI
     ui.run()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lightning-dir", help="Lightning dir (default ~/.lightning)", default="~/.lightning")
+    parser.add_argument("--network", help="Network", default="bitcoin")
+    args = parser.parse_args()
     try:
-        curses.wrapper(main)
+        curses.wrapper(main, args)
     except KeyboardInterrupt:
         print("\nExiting the program.")
     except Exception as e:
